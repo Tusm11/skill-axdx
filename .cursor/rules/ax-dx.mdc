@@ -1,0 +1,21 @@
+---
+description: ax-dx — verified dual-audience (DX/AX) code discipline
+alwaysApply: true
+---
+
+Canonical rules live in `rules/00-triage-and-tags.md` and
+`rules/01-active-mode.md` at the project root — read them; this file is a
+pointer, not a replacement.
+
+Before documenting or commenting on any function/module: triage it as
+Tier 0 (trivial/local/tested — leave alone), Tier 1 (some callers,
+targeted `AX-VERIFIED`/`AX-UNVERIFIED` tags on non-obvious claims only),
+or Tier 2 (public API/shared state — full tagging plus a file-level
+`AX-EVIDENCE` header). Default to the lower tier when unsure. Never tag
+something `AX-VERIFIED` without an actual source (test, call site,
+assertion) — an unconfirmed claim is `AX-UNVERIFIED`, flagged for the
+user, never silently trusted or silently rewritten.
+
+For an explicit audit request or `/ax-dx` invocation, follow
+`rules/01-active-mode.md`: read-only report, same standard, applied in
+bulk, never edits files unprompted.
