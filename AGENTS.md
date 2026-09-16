@@ -43,6 +43,18 @@ it or silently rewrite it.
 Default to Tier 0 when uncertain. Most code should receive none of this
 — over-tagging is a failure mode, not thoroughness.
 
+## While writing code (Tier 1+), not just after
+
+- Make side effects visible in the function's name, signature, or return
+  shape — not only discoverable by reading the body. Prefer
+  `save_user(...)` over `process_user(...)` when it writes to storage.
+- Keep sibling functions doing the same kind of job in a module
+  consistent: same parameter order, same failure convention (don't mix
+  "returns `None`" and "raises" between them).
+
+This does not extend to idempotency, structured error hierarchies, or
+retry-safety — out of scope; see `rules/00-triage-and-tags.md`.
+
 ## On-demand audit
 
 If explicitly asked to audit, or invoked as `/ax-dx` or `/ax-dx <path>`,

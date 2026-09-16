@@ -87,9 +87,42 @@ found" rather than omitting the line — an absence that was actively
 checked for is more useful than a silence that might just mean nobody
 looked.
 
+## Mechanism 4 — Structural AX guidance (applies while writing, Tier 1+)
+
+Documentation and tags (Mechanisms 2–3) describe code after it's
+written. This mechanism shapes the code itself, so there's less that
+needs describing or flagging in the first place. Two rules, both
+survived the two-sided test — nothing broader:
+
+**Surface side effects in the interface, not just the body.** If a
+function mutates shared state, performs I/O, or has an ordering
+requirement, that should be visible from its name, signature, or return
+shape — not something only discoverable by reading the implementation.
+Prefer `save_user(...)` over `process_user(...)` when the function
+writes to storage; prefer a return type that makes an ordering
+dependency explicit over a bare docstring note. This directly reduces
+how much ends up needing an `AX-UNVERIFIED` tag or a concealment-risk
+entry later, because it was never concealed to begin with.
+
+**Keep sibling operations in a module consistent in shape.** Same
+parameter order, same failure convention — don't mix "returns `None` on
+failure" and "raises" between functions doing the same kind of job in
+the same module. An agent that hasn't fully read a function often
+pattern-matches against its neighbors; inconsistent siblings cause wrong
+guesses more often for an agent than for a human, who tends to
+double-check on doubt.
+
+This mechanism does not extend to idempotency guarantees, structured
+error-type hierarchies, retry-safety, or logging/security conventions —
+those are production-readiness concerns outside this skill's scope (see
+"What this deliberately doesn't do" in the README). Where retry-safety
+or a similar property happens to matter for a specific function, it's
+still handled as something Mechanism 2 verifies or flags — not a new
+blanket structural rule.
+
 ## The two-sided test
 
-Before adding any convention beyond these three mechanisms, check it
+Before adding any convention beyond these four mechanisms, check it
 against both audiences:
 
 - Does it cost a human reader something (clutter, another thing to keep

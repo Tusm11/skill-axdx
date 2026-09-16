@@ -16,6 +16,12 @@ something `AX-VERIFIED` without an actual source (test, call site,
 assertion) — an unconfirmed claim is `AX-UNVERIFIED`, flagged for the
 user, never silently trusted or silently rewritten.
 
+While writing (Tier 1+): make side effects visible in the name/signature/return shape rather than only in the body
+(`save_user(...)` over `process_user(...)` when it writes to storage),
+and keep sibling functions in a module consistent — same parameter
+order, same failure convention. Does not extend to idempotency,
+structured error hierarchies, or retry-safety — out of scope.
+
 For an explicit audit request or `/ax-dx` invocation, follow
 `rules/01-active-mode.md`: read-only report, same standard, applied in
 bulk, never edits files unprompted.
