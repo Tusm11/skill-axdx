@@ -1,114 +1,404 @@
 # ax-dx
 
-A portable AI-agent skill for writing and reviewing code that's equally legible to the human maintaining it and the AI agent that will later modify it. Works natively in Claude Code, and via `AGENTS.md`/runtime-native rule files in Codex, Cursor, OpenCode, Antigravity, and Kiro.
+**Make code legible to both the human maintaining it and the AI agent modifying it next.**
 
-## Why this exists
+[License: MIT](https://github.com/Tusm11/skill-axdx/blob/main/LICENSE) · [AGENTS.md](https://agents.md/)
 
-Most "write clean code" advice was written with one reader in mind: a human skimming in an IDE. That reader can infer intent from surrounding context, ask a teammate what a weird comment means, or just notice something looks off. Increasingly, code has a second reader, an AI agent that shows up later to extend or fix something, with none of the original context, and no one to ask. That agent doesn't skim for vibes. It reads the docstring, trusts it, and acts on it. If the docstring is stale, aspirational, or was never quite true, the agent is wrong in exactly the way the documentation was wrong.
+AI coding agents increasingly work on code they didn't write and don't have the original context for. A human can ask a teammate why an invariant exists. An agent usually can't.
 
-Most attempts to fix this just mean "write more comments," which usually makes things worse, more prose for a human to wade through, with no guarantee any of it is actually accurate. ax-dx takes a different angle: treat documentation the way an investigative reporter treats a source. A docstring that claims "this list is always sorted" is a lead, not a fact, the evidence is the code that maintains the invariant, or a test that checks it. Nothing gets tagged as reliable until it's actually been checked against something real.
+That creates a subtle problem:
 
-The goal isn't "more documentation." It's a small, clearly separated layer of *verified* claims sitting next to code that otherwise stays exactly as clean and idiomatic as it would without this skill at all.
+**documentation can look authoritative without actually being true.**
 
-## How it works
+A docstring might say that a collection is always sorted. A comment might claim that an operation is idempotent. A function might appear thread-safe while quietly mutating shared state.
 
-There are three mechanisms, applied together:
+ax-dx treats these statements as **claims that need evidence**, rather than facts simply because they appear in documentation.
 
-**1. Triage first.** Not every function deserves this treatment, most code in most files doesn't. Before adding anything, the skill classifies what it's looking at:
+The goal isn't to add more comments.
 
-- **Tier 0** = trivial, local, already covered by an adjacent test. Left alone entirely.
-- **Tier 1** = some callers, a bit of non-obvious behavior. Gets targeted inline tags only for the specific claims that actually need them.
-- **Tier 2** = public API, multiple callers, shared state, anything with a side effect that isn't visible from the signature. Gets the full treatment.
+The goal is to leave behind a **small layer of verified knowledge** that helps the next agent understand what the code actually guarantees.
 
-The judgment call is based on blast radius (what breaks if this is wrong), how non-obvious the behavior is, and how far it sits from something already covered by a test. When it's ambiguous, it defaults to the lighter tier — the failure mode this guards against is bureaucratic over-tagging that just becomes noise nobody reads.
+---
 
-**2. Verified-claim tags.** For anything above Tier 0, claims that aren't self-evident from reading the code get a tag naming what actually backs them up:
+## The core idea
+
+ax-dx uses three ideas together:
+
+**Triage → Verify → Record**
+
+Before documenting or reviewing anything, ax-dx determines how much attention the code deserves.
+
+| Tier       | Typical code                                                  | Treatment                    |
+| ---------- | ------------------------------------------------------------- | ---------------------------- |
+| **Tier 0** | Trivial/local behavior already obvious from code or tests     | Leave untouched              |
+| **Tier 1** | Non-obvious behavior with limited impact                      | Add targeted verified claims |
+| **Tier 2** | Public APIs, shared state, side effects, important invariants | Full evidence treatment      |
+
+The classification considers:
+
+* **Blast radius** — what happens if the assumption is wrong?
+* **Non-obviousness** — can the behavior be established just by reading the implementation?
+* **Existing evidence** — is there a test, invariant, caller contract, or implementation detail supporting the claim?
+
+When uncertain, ax-dx prefers the lighter tier.
+
+The point is to avoid turning every function into documentation ceremony.
+
+---
+
+## Evidence-backed claims
+
+For Tier 1 and Tier 2 code, ax-dx identifies claims that matter to future maintenance.
+
+For example:
 
 ```python
 def merge_sorted(a: list[int], b: list[int]) -> list[int]:
     """Merge two sorted lists into one sorted list."""
-    # AX-VERIFIED: inputs must already be sorted ascending — caller contract,
-    # confirmed by test_merge_sorted_rejects_unsorted_input; not checked at runtime.
+
+    # AX-VERIFIED:
+    # Inputs must be sorted ascending.
+    # Evidence: test_merge_sorted_rejects_unsorted_input.
+    # The function does not validate this at runtime.
     ...
 ```
 
-If a claim exists but can't actually be confirmed against the implementation, it gets tagged `AX-UNVERIFIED` instead — flagged as a discrepancy, not silently trusted and not silently rewritten. That distinction (rather than quietly "fixing" it) is deliberate: the correct resolution often depends on intent only a human has.
+The important part isn't the comment itself.
 
-**3. A file-level evidence header, for the highest-stakes files only.** Tier 2 files get a short block near the top summarizing blast radius, verified invariants, and any concealed side effects, the things an agent would otherwise have to reconstruct by reading the whole file before touching it.
+It's the relationship between the **claim and its evidence**.
 
-Together, the effect is a split: the code itself stays exactly as clean as good code always was, that's for the human. The evidence sits alongside it, tagged and sourced — that's for the agent. Neither side is asked to read the other's layer to get what it needs.
+### AX-VERIFIED
 
-## Two modes
+Use when the claim can be established from something concrete:
 
-**Passive mode** is the default and needs no invocation. It applies automatically whenever code is being written, edited, or reviewed — triage happens quietly, tags get added inline as the code is produced.
+* implementation behavior
+* tests
+* caller contracts
+* type constraints
+* configuration
+* established invariants
 
-**Active mode** is an on-demand audit, triggered explicitly:
+### AX-UNVERIFIED
 
+Use when a claim exists but its truth cannot currently be established.
+
+```python
+# AX-UNVERIFIED:
+# "Safe to call concurrently."
+# No synchronization or concurrency test was found.
 ```
-/ax-dx              # audit the whole current repo
-/ax-dx src/          # audit just this folder
-/ax-dx src/api/users.ts   # audit just this file
+
+ax-dx does **not silently rewrite the claim**.
+
+An unverified statement may reflect an intentional design decision that only the developer understands. It is therefore surfaced as a discrepancy for human review.
+
+---
+
+## Concealed behavior
+
+ax-dx also looks for behavior that an agent could easily miss while reading a function or module.
+
+Examples include:
+
+* mutation hidden behind an apparently pure API
+* shared mutable state
+* implicit global configuration
+* externally visible side effects
+* retry-sensitive operations
+* assumptions enforced by callers rather than the function itself
+* behavior that is important but absent from the public documentation
+
+The question is simple:
+
+> **What would a future agent need to know before safely changing this code?**
+
+---
+
+## File-level evidence
+
+Some files carry considerably more risk than others.
+
+For higher-impact Tier 2 files, ax-dx can maintain a short evidence header containing:
+
+* important invariants
+* external dependencies
+* concealed side effects
+* shared state
+* relevant caller assumptions
+* areas where documentation is still unverified
+
+The header is intentionally compact.
+
+It exists so an agent doesn't have to reconstruct the entire file's behavioral contract before making a small change.
+
+---
+
+# Two modes
+
+## Passive mode
+
+Passive mode runs while an agent is already writing, editing, or reviewing code.
+
+The agent quietly applies the ax-dx discipline:
+
+```text
+             Code change
+                  │
+                  ▼
+               Triage
+             ┌────┴────┐
+             │         │
+          Tier 0    Tier 1/2
+             │         │
+           Leave     Inspect
+          alone        │
+                       ▼
+                  Find claims
+                       │
+                 ┌─────┴─────┐
+                 │           │
+             Evidence      No evidence
+                 │           │
+            VERIFIED     UNVERIFIED
 ```
 
-Active mode is **read-only**. It walks the target, applies the same triage and verification standard as passive mode, and produces a report, but it never edits a file on its own. The report shows what would be tagged, what checked out, what didn't, and where it found something concealed that nothing currently documents. If you want those tags actually written into the code afterward, that's a separate, explicit ask — not something the audit does by default.
+Most code should pass through with little or no modification.
 
-A typical report looks like:
+That is intentional.
 
+---
+
+## Active mode
+
+Active mode performs an explicit repository or path-level audit.
+
+```text
+/ax-dx
+/ax-dx src/
+/ax-dx src/api/users.ts
 ```
+
+The audit is **read-only**.
+
+It reports:
+
+* what was classified
+* which claims were verified
+* which claims could not be verified
+* concealed behavior discovered
+* files requiring deeper attention
+* evidence used for each finding
+
+It does not modify files automatically.
+
+If you want the findings written back into the code, that is a separate explicit operation.
+
+---
+
+# Example audit
+
+```text
 # AX-DX Audit Report
 
 ## Summary
+
 Files scanned: 14
-Tier 0 (skipped): 41 units
-Tier 1 (light):   9 units
-Tier 2 (full):    3 units
-Claims checked:   22
-  Verified:       17
-  Unverified:     5
 
-## Findings by file
+Tier 0: 41 units
+Tier 1:  9 units
+Tier 2:  3 units
 
-### src/api/users.ts
+Claims checked: 22
+Verified:       17
+Unverified:      5
+
+## src/api/users.ts
+
 Tier: 2
-- VERIFIED: idempotent on retry — confirmed by test_user_create_retry_safe
-- UNVERIFIED: "safe to call concurrently" — no test asserts this, and the
-  function writes to a shared counter with no lock
-Concealment risks found: shared mutable counter not mentioned in docstring
+
+VERIFIED
+  create_user is idempotent on retry
+  Evidence: test_user_create_retry_safe
+
+UNVERIFIED
+  "safe to call concurrently"
+  Evidence not found
+
+CONCEALED
+  Shared mutable counter is modified by create_user
+  but this side effect is not documented.
+
+## Action
+
+Human review recommended for 1 unverified concurrency claim.
 ```
 
-## What this deliberately doesn't do
+The report is deliberately about **evidence**, not confidence scores.
 
-This isn't a general production-readiness tool, it doesn't audit error handling, security, logging conventions, or system-design capacity. Those are real concerns, but folding them in here would dilute the one thing this skill is actually for. Anything added to it has to pass a simple test: does it cost a human reader something, and does it save an agent something real? If a proposed convention only helps one side, it doesn't belong here.
+---
 
-It also isn't trying to verify everything, everywhere, all the time. The triage step exists specifically so this doesn't turn into ceremony — most functions should come out of this untouched, and that's working as intended, not a gap.
+# What ax-dx is not
 
-## Portability
+ax-dx is not another generic "clean code" checklist.
 
-Skills are meant to be portable, so the actual rules don't live only in
-`SKILL.md` — they live in `rules/`, and every runtime-specific file is a
-thin pointer or mirror of that one source. Edit `rules/` once, every
-agent that reads this repo inherits the change.
+It does not try to make every function:
 
-| Path | Responsibility | Loaded by |
-|---|---|---|
-| `rules/00-triage-and-tags.md` | Canonical. Triage tiers, `AX-VERIFIED`/`AX-UNVERIFIED` tag format, file-level evidence header, the two-sided test. | Referenced by every adapter |
-| `rules/01-active-mode.md` | Canonical. The on-demand audit workflow and report format. | Referenced by every adapter |
-| `SKILL.md` | Claude-native entry point: frontmatter for skill discovery, points at `rules/` rather than duplicating it. | Claude Code, Claude.ai |
-| `AGENTS.md` | Condensed always-on rules per the `agents.md` convention. | Codex, Cursor, OpenCode, Antigravity, Kiro (auto-load) |
-| `.cursor/rules/ax-dx.mdc` | Cursor-native mirror, `alwaysApply: true`. | Cursor |
-| `.agent/rules/ax-dx.md` | Antigravity-native rule pointing at `rules/`. | Antigravity |
-| `.kiro/steering/ax-dx.md` | Kiro steering file, live-inlines `rules/` via `#[[file:]]` refs — zero drift. | Kiro |
+* heavily documented
+* maximally abstract
+* production-ready
+* covered by unnecessary tests
+* surrounded by defensive boilerplate
 
-Two delivery modes, same as within the skill itself: passive rules
-(`AGENTS.md`, `.cursor/rules/`, `.agent/rules/`, `.kiro/steering/`) apply
-automatically to every edit an agent makes in the project. Active mode
-(`SKILL.md`'s `/ax-dx` command, where the runtime supports slash-command
-skill discovery) runs the on-demand audit.
+It also does not replace:
 
-## Installing
+* security auditing
+* performance testing
+* production observability
+* architecture review
+* conventional testing
+* code review
 
-**Claude Code:** copy the whole `ax-dx/` folder into `~/.claude/skills/ax-dx/`. Passive mode applies automatically based on `SKILL.md`'s trigger conditions; active mode is available via `/ax-dx`.
+Those are separate concerns.
 
-**Codex, Cursor, OpenCode, Antigravity, Kiro:** drop this repo's files into your project (or install project-wide). `AGENTS.md` and the runtime-native rule files auto-load — nothing further to configure. Where a runtime supports skill-style commands, `/ax-dx` (bare or with a path) triggers the active-mode audit; otherwise, passive rules still apply to every edit even without an explicit command.
+ax-dx asks a narrower question:
 
-**Everywhere:** if you ever need to change a rule, change it in `rules/00-triage-and-tags.md` or `rules/01-active-mode.md` — every adapter points back to those two files, so nothing needs to be updated in more than one place.
+> **Can a future AI agent distinguish what the code actually guarantees from what someone merely claimed about it?**
+
+---
+
+# Portability
+
+The canonical rules live in `rules/`.
+
+Agent-specific files are thin adapters around that source.
+
+| Path                          | Purpose                                |
+| ----------------------------- | -------------------------------------- |
+| `rules/00-triage-and-tags.md` | Triage model and verified-claim format |
+| `rules/01-active-mode.md`     | Audit workflow and report format       |
+| `SKILL.md`                    | Claude-compatible skill entry point    |
+| `AGENTS.md`                   | Agent-wide passive rules               |
+| `.cursor/rules/ax-dx.mdc`     | Cursor integration                     |
+| `.agent/rules/ax-dx.md`       | Antigravity integration                |
+| `.kiro/steering/ax-dx.md`     | Kiro integration                       |
+
+This keeps the behavioral rules in one place.
+
+If a rule changes, update the canonical rule rather than maintaining several independent versions.
+
+---
+
+# Agent compatibility
+
+ax-dx is designed around runtime-native instruction mechanisms rather than depending on one particular coding agent.
+
+| Agent            | Integration                                                          |
+| ---------------- | -------------------------------------------------------------------- |
+| **Claude Code**  | `SKILL.md`                                                           |
+| **Codex**        | `AGENTS.md` / skills                                                 |
+| **Cursor**       | `.cursor/rules/` + `AGENTS.md`                                       |
+| **OpenCode**     | `AGENTS.md` / Claude-compatible skills                               |
+| **Antigravity**  | `.agent/rules/` + `AGENTS.md`                                        |
+| **Kiro**         | `.kiro/steering/`                                                    |
+| **Other agents** | Canonical `rules/` can be adapted to their native instruction format |
+
+The principle stays the same regardless of runtime:
+
+**one rule set, multiple adapters.**
+
+---
+
+# Installation
+
+### Claude Code
+
+Copy the skill into the Claude skills directory:
+
+```bash
+cp -r ax-dx ~/.claude/skills/ax-dx/
+```
+
+Then use:
+
+```text
+/ax-dx
+```
+
+### Other coding agents
+
+Copy the repository's agent-specific files into the project.
+
+For agents supporting `AGENTS.md`, the passive rules can be loaded automatically.
+
+For runtimes with native rule systems, use the corresponding adapter under:
+
+```text
+.cursor/
+.agent/
+.kiro/
+```
+
+---
+
+# Design principles
+
+### 1. Evidence over authority
+
+A comment isn't true because it is written confidently.
+
+Claims should point toward something that can establish them.
+
+### 2. Less documentation, more signal
+
+Most code doesn't need additional annotations.
+
+Only behavior that matters and isn't already obvious should receive attention.
+
+### 3. Preserve uncertainty
+
+When a claim cannot be verified, don't quietly "correct" it.
+
+Surface the uncertainty so a human can resolve the intent.
+
+### 4. Optimize for the next maintainer
+
+The next maintainer may be:
+
+* a developer who joins the project later
+* another AI agent
+* the same agent several months later
+
+The code should leave enough evidence for any of them to understand its important contracts.
+
+### 5. Keep code and evidence separate
+
+The implementation remains idiomatic code.
+
+The evidence layer exists beside it to expose assumptions that aren't obvious from the implementation alone.
+
+---
+
+# Contributing
+
+Contributions are welcome.
+
+When changing ax-dx:
+
+* Put shared behavioral rules in `rules/`.
+* Keep runtime-specific adapters thin.
+* Avoid adding documentation requirements without a concrete maintenance benefit.
+* Prefer evidence that can actually be checked.
+* Add examples when introducing a new type of claim or failure mode.
+* Test changes against a real codebase and at least one supported agent.
+
+The guiding test for new rules is:
+
+> **Does this give a future agent useful information that it could not reliably obtain from the code itself?**
+
+If not, it probably doesn't belong in ax-dx.
+
+---
+
+# License
+
+MIT © 2026 Abhiram
